@@ -37,7 +37,7 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 1;
+unsigned long FirmwareVersion = 2;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
 //char* eventNames[] = {"L", "R"}; // Left and right threshold crossings (with respect to position at trial start).
 //byte nEventNames = (sizeof(eventNames)/sizeof(char *));
@@ -74,6 +74,7 @@ byte param = 0;
 boolean newOp = false;
 boolean loggedDataAvailable = 0;
 boolean wrappingEnabled = true;
+byte wrapMode = 0;
 byte terminatingEvent = 0;
 boolean EncoderPinAValue = 0;
 boolean EncoderPinALastValue = 0;
@@ -189,6 +190,12 @@ void loop() {
         nWraps = 0;
       }
       break;
+      case 'M': // Set wrap Mode: 0 bipolar (wrap to negative wrapPoint), 1 = unipolar (wrap to zero)
+        if (opSource == 0) {
+          wrapMode = myUSB.readByte(); // Read number of thresholds to program
+          myUSB.writeByte(1);
+        }
+      break;
       case 'T': // Program thresholds
         if (opSource == 0) {
           param = myUSB.readByte(); // Read number of thresholds to program
@@ -214,6 +221,7 @@ void loop() {
         for (int i = 0; i < nThresholds; i++) {
           thresholdActive[i] = bitRead(param, i);
         }
+        nWraps = 0;
       break;
       case 'Z': // Zero position
           EncoderPos = 0;
@@ -223,6 +231,7 @@ void loop() {
         for (int i = 0; i < nThresholds; i++) {
           thresholdActive[i] = true;
         }
+        nWraps = 0;
       break;
       case 'L': // Start microSD logging
         startLogging();
@@ -355,10 +364,21 @@ void readNewPosition() {
     EncoderPos--;
   }
   if (wrappingEnabled) {
-    if (EncoderPos < wrapPointInverse) {
-      EncoderPos = wrapPoint; nWraps--;
-    } else if (EncoderPos > wrapPoint) {
-      EncoderPos = wrapPointInverse; nWraps++;
+    switch (wrapMode) {
+      case 0: // Bipolar mode
+        if (EncoderPos < wrapPointInverse) {
+          EncoderPos = wrapPoint; nWraps--;
+        } else if (EncoderPos > wrapPoint) {
+          EncoderPos = wrapPointInverse; nWraps++;
+        }
+      break;
+      case 1: // Unipolar mode
+        if (EncoderPos > wrapPoint) {
+          EncoderPos = 0; nWraps++;
+        } else if (EncoderPos < 0) { 
+          EncoderPos = wrapPoint; nWraps--;
+        }
+      break;
     }
   }
   positionBuffer[iPositionBuffer] = EncoderPos;
