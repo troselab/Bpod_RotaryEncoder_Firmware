@@ -37,10 +37,8 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 1;
+unsigned long FirmwareVersion = 2;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
-//char* eventNames[] = {"L", "R"}; // Left and right threshold crossings (with respect to position at trial start).
-//byte nEventNames = (sizeof(eventNames)/sizeof(char *));
 
 // Output stream setup
 char moduleStreamPrefix = 'M'; // Command character to send before each position value when streaming data via output stream jack
@@ -74,6 +72,7 @@ byte param = 0;
 boolean newOp = false;
 boolean loggedDataAvailable = 0;
 boolean wrappingEnabled = true;
+byte wrapMode = 0;
 byte terminatingEvent = 0;
 boolean EncoderPinAValue = 0;
 boolean EncoderPinALastValue = 0;
@@ -104,10 +103,26 @@ uint8_t sdReadBuffer[sdReadBufferSize] = {0};
 
 // Interrupt and position buffers
 const uint32_t positionBufferSize = 1024;
-int16_t positionBuffer[positionBufferSize] = {0};
-int32_t timeBuffer[positionBufferSize] = {0};
-uint32_t iPositionBuffer = 0;
+int16_t positionBuffer[positionBufferSize][2] = {0};
+int32_t timeBuffer[positionBufferSize][2] = {0};
+uint32_t iPositionBuffer[2] = {0};
+uint32_t thisInd = 0;
 boolean positionBufferFlag = false;
+byte currentPositionBuffer = 0;
+byte thisPositionBuffer = 0;
+uint32_t currentInd = 0;
+
+// Event buffer
+byte newEventType = 0; // 0 = State Machine, (Not yet implemented: 1 = TTL Ch 18, 2 = TTL Ch 19, 3 = I2C)
+byte newEventCode = 0; // The new event (if state machine or I2C, a byte; if TTL, a logic level)
+uint32_t newEventTime = 0;
+boolean newEvent = 0;
+
+// USB streaming buffer
+const uint32_t usbStreamingBufferSize = 1000;
+uint32_t usbStreamingBufferPos = 0;
+byte usbStreamingBuffer[usbStreamingBufferSize] = {0};
+uint32_t nPositions = 0;
 
 void setup() {
   // put your setup code here, to run once:
@@ -116,8 +131,6 @@ void setup() {
   Serial2.begin(1312500);
   pinMode(EncoderPinA, INPUT);
   pinMode (EncoderPinB, INPUT);
-  pinMode(13, OUTPUT);
-  digitalWrite(13, HIGH);
   SPI.begin();
   SD.begin(); // Initialize microSD card
   SD.remove("Data.wfm");
@@ -176,6 +189,25 @@ void loop() {
         myUSB.writeByte(1);
       }
       break;
+      case '#': // Log an incoming event and the current time
+        if (opSource == 1) {
+          newEventCode = StateMachineCOM.readByte();
+          newEventTime = currentTime - startTime;
+          newEventType = 0; // 0 = State Machine, (Not yet implemented: 1 = TTL Ch 18, 2 = TTL Ch 19, 3 = I2C)
+          if (usbStreaming) {
+            usbStreamingBuffer[0] = 'E';
+            usbStreamingBuffer[1] = newEventType; // State machine event type (0 = 
+            usbStreamingBuffer[2] = newEventCode; // State machine event code
+            typeBuffer.uint32 = newEventTime; // State machine event time on RE module clock
+            usbStreamingBuffer[3] = typeBuffer.uint8[0];
+            usbStreamingBuffer[4] = typeBuffer.uint8[1];
+            usbStreamingBuffer[5] = typeBuffer.uint8[2];
+            usbStreamingBuffer[6] = typeBuffer.uint8[3];
+            myUSB.writeByteArray(usbStreamingBuffer, 7);
+          }
+          newEvent = true;
+        }
+      break;
       case 'W': // Set wrap point (in tics)
       if (opSource == 0) {
         wrapPoint = myUSB.readInt16();
@@ -188,6 +220,12 @@ void loop() {
         wrapPointInverse = wrapPoint * -1;
         nWraps = 0;
       }
+      break;
+      case 'M': // Set wrap Mode: 0 bipolar (wrap to negative wrapPoint), 1 = unipolar (wrap to zero)
+        if (opSource == 0) {
+          wrapMode = myUSB.readByte(); // Read number of thresholds to program
+          myUSB.writeByte(1);
+        }
       break;
       case 'T': // Program thresholds
         if (opSource == 0) {
@@ -214,6 +252,7 @@ void loop() {
         for (int i = 0; i < nThresholds; i++) {
           thresholdActive[i] = bitRead(param, i);
         }
+        nWraps = 0;
       break;
       case 'Z': // Zero position
           EncoderPos = 0;
@@ -223,6 +262,7 @@ void loop() {
         for (int i = 0; i < nThresholds; i++) {
           thresholdActive[i] = true;
         }
+        nWraps = 0;
       break;
       case 'L': // Start microSD logging
         startLogging();
@@ -236,7 +276,6 @@ void loop() {
       break;
       case 'R': // Return logged data
         if (opSource == 0) {
-          //detachInterrupt(EncoderPinA); // Not necessary
           isLogging = false;
           if (loggedDataAvailable) {
             loggedDataAvailable = false;
@@ -261,7 +300,6 @@ void loop() {
           } else {
             myUSB.writeUint32(0);
           }
-          //attachInterrupt(EncoderPinA, readNewPosition, RISING); // Not necessary
         }
       break;
       case 'Q': // Return current encoder position
@@ -283,25 +321,50 @@ void loop() {
         dataPos = 0;
         EncoderPos = 0;
         nWraps = 0;
-        iPositionBuffer = 0;
+        iPositionBuffer[0] = 0;
+        iPositionBuffer[1] = 0;
       break;
     } // End switch(opCode)
   } // End if (SerialUSB.available())
 
   if(positionBufferFlag) { // If new data points have been added since last loop
     positionBufferFlag = false;
+    nPositions = iPositionBuffer[currentPositionBuffer];
+    thisPositionBuffer = currentPositionBuffer;
+    currentPositionBuffer = 1-currentPositionBuffer;
+    iPositionBuffer[currentPositionBuffer] = 0;
     if (usbStreaming) {
-      for (int i = 0; i < iPositionBuffer; i++) {
-        myUSB.writeInt16(positionBuffer[i]);
-        myUSB.writeUint32(timeBuffer[i]);
+      if (nPositions > 0) {
+        usbStreamingBuffer[0] = 'P'; // Code for position data
+        usbStreamingBuffer[1] = nPositions;
+        usbStreamingBufferPos = 2;
+        for (int i = 0; i < nPositions; i++) {
+          typeBuffer.uint16 = positionBuffer[i][thisPositionBuffer]; // Position
+          usbStreamingBuffer[usbStreamingBufferPos] = typeBuffer.uint8[0];
+          usbStreamingBuffer[usbStreamingBufferPos+1] = typeBuffer.uint8[1];
+          usbStreamingBufferPos += 2;
+          typeBuffer.uint32 = timeBuffer[i][thisPositionBuffer]; // Time
+          usbStreamingBuffer[usbStreamingBufferPos] = typeBuffer.uint8[0]; 
+          usbStreamingBuffer[usbStreamingBufferPos+1] = typeBuffer.uint8[1];
+          usbStreamingBuffer[usbStreamingBufferPos+2] = typeBuffer.uint8[2];
+          usbStreamingBuffer[usbStreamingBufferPos+3] = typeBuffer.uint8[3];
+          usbStreamingBufferPos+=4;
+        }
+        myUSB.writeByteArray(usbStreamingBuffer, usbStreamingBufferPos);
+      } else {
+        myUSB.writeByte('F'); // Fault
       }
       myUSB.flush();
     }
-    
+    if (isLogging) {
+      if (dataPos<dataMax) {
+        logCurrentPosition();
+      }
+    } 
     if (moduleStreaming) {
-      for (int i = 0; i < iPositionBuffer; i++) {
+      for (int i = 0; i < nPositions; i++) {
         OutputStreamCOM.writeByte(moduleStreamPrefix);
-        typeBuffer.uint32 = positionBuffer[i]+wrapPoint;
+        typeBuffer.uint32 = positionBuffer[i][currentPositionBuffer]+wrapPoint;
         switch(outputStreamDatatype) {
           case 'H':
             OutputStreamCOM.writeUint16(typeBuffer.uint16);
@@ -317,15 +380,15 @@ void loop() {
         for (int i = 0; i < nThresholds; i++) {
           if (thresholdActive[i]) {
              if (thresholds[i] < 0) {
-                for (int j = 0; j < iPositionBuffer; j++) {
-                  if (positionBuffer[j] <= thresholds[i]) {
+                for (int j = 0; j < nPositions; j++) {
+                  if (positionBuffer[j][currentPositionBuffer] <= thresholds[i]) {
                     thresholdActive[i] = false;
                     StateMachineCOM.writeByte(i+1);
                   }
                 }
              } else {
-                for (int j = 0; j < iPositionBuffer; j++) {
-                  if (positionBuffer[j] >= thresholds[i]) {
+                for (int j = 0; j < nPositions; j++) {
+                  if (positionBuffer[j][currentPositionBuffer] >= thresholds[i]) {
                     thresholdActive[i] = false;
                     StateMachineCOM.writeByte(i+1);
                   }
@@ -335,13 +398,6 @@ void loop() {
         }
       }
     }
-
-    if (isLogging) {
-      if (dataPos<dataMax) {
-        logCurrentPosition();
-      }
-    }
-    iPositionBuffer = 0;
   }
 }
 
@@ -355,15 +411,27 @@ void readNewPosition() {
     EncoderPos--;
   }
   if (wrappingEnabled) {
-    if (EncoderPos < wrapPointInverse) {
-      EncoderPos = wrapPoint; nWraps--;
-    } else if (EncoderPos > wrapPoint) {
-      EncoderPos = wrapPointInverse; nWraps++;
+    switch (wrapMode) {
+      case 0: // Bipolar mode
+        if (EncoderPos < wrapPointInverse) {
+          EncoderPos = wrapPoint; nWraps--;
+        } else if (EncoderPos > wrapPoint) {
+          EncoderPos = wrapPointInverse; nWraps++;
+        }
+      break;
+      case 1: // Unipolar mode
+        if (EncoderPos > wrapPoint) {
+          EncoderPos = 0; nWraps++;
+        } else if (EncoderPos < 0) { 
+          EncoderPos = wrapPoint; nWraps--;
+        }
+      break;
     }
   }
-  positionBuffer[iPositionBuffer] = EncoderPos;
-  timeBuffer[iPositionBuffer] = timeFromStart;
-  iPositionBuffer++;
+  thisInd = iPositionBuffer[currentPositionBuffer];
+  positionBuffer[thisInd][currentPositionBuffer] = EncoderPos;
+  timeBuffer[thisInd][currentPositionBuffer] = timeFromStart;
+  iPositionBuffer[currentPositionBuffer]++;
   positionBufferFlag = true;
 }
 
@@ -373,18 +441,6 @@ void returnModuleInfo() {
   StateMachineCOM.writeByte(sizeof(moduleName)-1); // Length of module name
   StateMachineCOM.writeCharArray(moduleName, sizeof(moduleName)-1); // Module name
   StateMachineCOM.writeByte(0); // 1 if more info follows, 0 if not
-//  StateMachineCOM.writeByte('#'); // Op code for: Number of behavior events this module can generate
-//  StateMachineCOM.writeByte(2); // 2 thresholds
-//  StateMachineCOM.writeByte(1); // 1 if more info follows, 0 if not
-//  StateMachineCOM.writeByte('E'); // Op code for: Behavior event names
-//  StateMachineCOM.writeByte(nEventNames);
-//  for (int i = 0; i < nEventNames; i++) { // Once for each event name
-//    StateMachineCOM.writeByte(strlen(eventNames[i])); // Send event name length
-//    for (int j = 0; j < strlen(eventNames[i]); j++) { // Once for each character in this event name
-//      StateMachineCOM.writeByte(*(eventNames[i]+j)); // Send the character
-//    }
-//  }
-//  StateMachineCOM.writeByte(0); // 1 if more info follows, 0 if not
 }
 
 void startLogging() {
@@ -393,29 +449,18 @@ void startLogging() {
   startTime = currentTime;
   isLogging = true;
   timeFromStart = 0;
-  iPositionBuffer = 0;
+  iPositionBuffer[0] = 0;
+  iPositionBuffer[1] = 0;
 }
 
 void logCurrentPosition() {
-  if (iPositionBuffer > 0) {
-    //detachInterrupt(EncoderPinA);
-    //uint32_t bufPos = 0;
-//    for (int i = 0; i < iPositionBuffer; i++) {
-//      sdWriteBuffer.int32[bufPos] = positionBuffer[i];
-//      sdWriteBuffer.int32[bufPos+1] = timeBuffer[i];
-//      bufPos+=2;
-//    }
-    sdWriteBuffer.int32[0] = positionBuffer[iPositionBuffer-1];
-    sdWriteBuffer.int32[1] = timeBuffer[iPositionBuffer-1];
-    DataFile.write(sdWriteBuffer.uint8, 8);
-    dataPos+=1;
-    iPositionBuffer = iPositionBuffer - 1;
-
-    
-    //DataFile.write(sdWriteBuffer.uint8, 8*iPositionBuffer);
-    //dataPos+=iPositionBuffer;
-    //iPositionBuffer = 0;
-    //attachInterrupt(EncoderPinA, readNewPosition, RISING);
+  if (nPositions > 0) {
+    for (int i = 0; i < nPositions; i++) {
+      sdWriteBuffer.int32[0] = positionBuffer[i][thisPositionBuffer];
+      sdWriteBuffer.int32[1] = timeBuffer[i][thisPositionBuffer];
+      DataFile.write(sdWriteBuffer.uint8, 8);
+      dataPos+=1;
+    }
   }
 }
 
