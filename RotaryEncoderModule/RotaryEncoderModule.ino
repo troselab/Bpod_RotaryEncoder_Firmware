@@ -37,7 +37,7 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 2;
+unsigned long FirmwareVersion = 3;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
 
 // Output stream setup
@@ -50,7 +50,7 @@ const byte EncoderPinB = 36;
 const byte EncoderPinZ = 37;
 
 // Parameters
-const byte maxThresholds = 2;
+const byte maxThresholds = 8;
 int16_t thresholds[maxThresholds] = {0}; // Initialized by client. Position range = -512 : 512 encoder tics, corresponding to -180 : +180 degrees
 boolean thresholdActive[maxThresholds] = {true}; // Thresholds are inactivated on crossing, until manually reset
 byte nThresholds = maxThresholds; // Number of thresholds currently used
@@ -61,7 +61,6 @@ int nWraps = 0; // number of times (positive or negative) that the wheel positio
 boolean usbStreaming = false; // If currently streaming position and time data to the output-stream port
 boolean sendEvents = true; // True if sending threshold crossing events to state machine
 boolean isLogging = false; // If currently logging position and time to microSD memory
-boolean inTrial = false; // If currently in a trial
 boolean moduleStreaming = false; // If streaming position to a separate module via the output stream jack (preconfigured output for DDS module)
 int16_t EncoderPos = 0; // Current position of the rotary encoder
 
@@ -219,6 +218,9 @@ void loop() {
         }
         wrapPointInverse = wrapPoint * -1;
         nWraps = 0;
+        if ((EncoderPos > wrapPoint) || (EncoderPos < wrapPointInverse)) {
+          EncoderPos = wrapPoint;
+        }
       }
       break;
       case 'M': // Set wrap Mode: 0 bipolar (wrap to negative wrapPoint), 1 = unipolar (wrap to zero)
@@ -314,15 +316,8 @@ void loop() {
           myUSB.writeByte(1);
         }
       break;
-      case 'X': // Reset all params
-        usbStreaming = false;
-        isLogging = false;
-        inTrial = false;
-        dataPos = 0;
-        EncoderPos = 0;
-        nWraps = 0;
-        iPositionBuffer[0] = 0;
-        iPositionBuffer[1] = 0;
+      case 'X': // Reset all data streams
+        resetDataStreams();
       break;
     } // End switch(opCode)
   } // End if (SerialUSB.available())
@@ -364,7 +359,7 @@ void loop() {
     if (moduleStreaming) {
       for (int i = 0; i < nPositions; i++) {
         OutputStreamCOM.writeByte(moduleStreamPrefix);
-        typeBuffer.uint32 = positionBuffer[i][currentPositionBuffer]+wrapPoint;
+        typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer]+wrapPoint;
         switch(outputStreamDatatype) {
           case 'H':
             OutputStreamCOM.writeUint16(typeBuffer.uint16);
@@ -381,16 +376,20 @@ void loop() {
           if (thresholdActive[i]) {
              if (thresholds[i] < 0) {
                 for (int j = 0; j < nPositions; j++) {
-                  if (positionBuffer[j][currentPositionBuffer] <= thresholds[i]) {
-                    thresholdActive[i] = false;
-                    StateMachineCOM.writeByte(i+1);
+                  if (thresholdActive[i]) {
+                    if (positionBuffer[j][thisPositionBuffer] <= thresholds[i]) {
+                      thresholdActive[i] = false;
+                      StateMachineCOM.writeByte(i+1);
+                    }
                   }
                 }
              } else {
                 for (int j = 0; j < nPositions; j++) {
-                  if (positionBuffer[j][currentPositionBuffer] >= thresholds[i]) {
-                    thresholdActive[i] = false;
-                    StateMachineCOM.writeByte(i+1);
+                  if (thresholdActive[i]) {
+                    if (positionBuffer[j][thisPositionBuffer] >= thresholds[i]) {
+                      thresholdActive[i] = false;
+                      StateMachineCOM.writeByte(i+1);
+                    }
                   }
                 }
              }
@@ -477,3 +476,14 @@ byte readByteFromSource(byte opSource) {
     break;
   }
 }
+
+void resetDataStreams() {
+  usbStreaming = false;
+  isLogging = false;
+  dataPos = 0;
+  EncoderPos = 0;
+  nWraps = 0;
+  iPositionBuffer[0] = 0;
+  iPositionBuffer[1] = 0;
+}
+
