@@ -330,10 +330,10 @@ void loop() {
     iPositionBuffer[currentPositionBuffer] = 0;
     if (usbStreaming) {
       if (nPositions > 0) {
-        usbStreamingBuffer[0] = 'P'; // Code for position data
-        usbStreamingBuffer[1] = nPositions;
-        usbStreamingBufferPos = 2;
+        usbStreamingBufferPos = 0;
         for (int i = 0; i < nPositions; i++) {
+          usbStreamingBuffer[usbStreamingBufferPos] = 'P'; // Code for position data
+          usbStreamingBufferPos++;
           typeBuffer.uint16 = positionBuffer[i][thisPositionBuffer]; // Position
           usbStreamingBuffer[usbStreamingBufferPos] = typeBuffer.uint8[0];
           usbStreamingBuffer[usbStreamingBufferPos+1] = typeBuffer.uint8[1];
@@ -346,8 +346,6 @@ void loop() {
           usbStreamingBufferPos+=4;
         }
         myUSB.writeByteArray(usbStreamingBuffer, usbStreamingBufferPos);
-      } else {
-        myUSB.writeByte('F'); // Fault
       }
       myUSB.flush();
     }
