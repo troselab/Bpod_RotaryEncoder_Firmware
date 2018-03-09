@@ -28,8 +28,6 @@
 #include <SPI.h>
 #include "SdFat.h"
 SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 ArCOM myUSB(SerialUSB); // USB is an ArCOM object. ArCOM wraps Arduino's SerialUSB interface, to
 ArCOM StateMachineCOM(Serial3); // UART serial port
 ArCOM OutputStreamCOM(Serial2); // UART serial port
@@ -63,6 +61,7 @@ boolean sendEvents = true; // True if sending threshold crossing events to state
 boolean isLogging = false; // If currently logging position and time to microSD memory
 boolean moduleStreaming = false; // If streaming position to a separate module via the output stream jack (preconfigured output for DDS module)
 int16_t EncoderPos = 0; // Current position of the rotary encoder
+byte currentDir = 0; // Current direction (0 = clockwise, 1 = counterclockwise)
 
 // Program variables
 byte opCode = 0;
@@ -72,12 +71,9 @@ boolean newOp = false;
 boolean loggedDataAvailable = 0;
 boolean wrappingEnabled = true;
 byte wrapMode = 0;
-byte terminatingEvent = 0;
 boolean EncoderPinAValue = 0;
-boolean EncoderPinALastValue = 0;
+boolean LastEncoderPinAValue = 0;
 boolean EncoderPinBValue = 0;
-word EncoderPos16Bit =  0;
-unsigned long choiceTime = 0;
 unsigned long dataPos = 0;
 unsigned long dataMax = 4294967295; // Maximim number of positions that can be logged (limited by 32-bit counter)
 unsigned long startTime = 0;
@@ -135,7 +131,7 @@ void setup() {
   SD.remove("Data.wfm");
   DataFile = SD.open("Data.wfm", FILE_WRITE);
   wrapPointInverse = wrapPoint * -1;
-  attachInterrupt(EncoderPinA, readNewPosition, RISING);
+  attachInterrupt(EncoderPinA, updatePosition, CHANGE);
 }
 
 void loop() {
@@ -357,7 +353,11 @@ void loop() {
     if (moduleStreaming) {
       for (int i = 0; i < nPositions; i++) {
         OutputStreamCOM.writeByte(moduleStreamPrefix);
-        typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer]+wrapPoint;
+        if (wrapMode == 0) { // In Bipolar mode, sends the unipolar equivalent
+          typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer]+wrapPoint;
+        } else {
+          typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer];
+        }
         switch(outputStreamDatatype) {
           case 'H':
             OutputStreamCOM.writeUint16(typeBuffer.uint16);
@@ -398,21 +398,42 @@ void loop() {
   }
 }
 
-void readNewPosition() {
-  // If this function was called, we already know encoder pin A was just driven high
-  EncoderPinBValue = digitalRead(EncoderPinB);
-  timeFromStart = currentTime - startTime;
-  if (EncoderPinBValue == HIGH) {
-    EncoderPos++;
-  } else {
-    EncoderPos--;
+void updatePosition() { // Implements 'X1 encoding' as per NI encoder tutorial: http://www.ni.com/tutorial/7109/en/
+  // This interrupt handler is called each time the value of pin A changes
+  EncoderPinAValue = digitalReadFast(EncoderPinA);
+  EncoderPinBValue = digitalReadFast(EncoderPinB);
+  if (EncoderPinAValue && !LastEncoderPinAValue) { // If rising edge of pin A
+    if (EncoderPinBValue == HIGH) {
+      if (currentDir == 0) {
+        EncoderPos++;
+        processPosition();
+      }
+      currentDir = 0;
+    } else {
+      currentDir = 1;
+    }
+  } else {                                         // If falling edge of pin A
+    if (EncoderPinBValue == HIGH) {
+      if (currentDir == 1) {
+        EncoderPos--;
+        processPosition();
+      }
+      currentDir = 1;
+    } else {
+      currentDir = 0;
+    }
   }
+  LastEncoderPinAValue = EncoderPinAValue;
+}
+
+void processPosition() {
+  timeFromStart = currentTime - startTime;
   if (wrappingEnabled) {
     switch (wrapMode) {
       case 0: // Bipolar mode
-        if (EncoderPos < wrapPointInverse) {
+        if (EncoderPos <= wrapPointInverse) {
           EncoderPos = wrapPoint; nWraps--;
-        } else if (EncoderPos > wrapPoint) {
+        } else if (EncoderPos >= wrapPoint) {
           EncoderPos = wrapPointInverse; nWraps++;
         }
       break;
