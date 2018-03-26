@@ -28,8 +28,6 @@
 #include <SPI.h>
 #include "SdFat.h"
 SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 ArCOM myUSB(SerialUSB); // USB is an ArCOM object. ArCOM wraps Arduino's SerialUSB interface, to
 ArCOM StateMachineCOM(Serial3); // UART serial port
 ArCOM OutputStreamCOM(Serial2); // UART serial port
@@ -37,7 +35,7 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 2;
+unsigned long FirmwareVersion = 3;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
 
 // Output stream setup
@@ -50,7 +48,7 @@ const byte EncoderPinB = 36;
 const byte EncoderPinZ = 37;
 
 // Parameters
-const byte maxThresholds = 2;
+const byte maxThresholds = 8;
 int16_t thresholds[maxThresholds] = {0}; // Initialized by client. Position range = -512 : 512 encoder tics, corresponding to -180 : +180 degrees
 boolean thresholdActive[maxThresholds] = {true}; // Thresholds are inactivated on crossing, until manually reset
 byte nThresholds = maxThresholds; // Number of thresholds currently used
@@ -61,9 +59,9 @@ int nWraps = 0; // number of times (positive or negative) that the wheel positio
 boolean usbStreaming = false; // If currently streaming position and time data to the output-stream port
 boolean sendEvents = true; // True if sending threshold crossing events to state machine
 boolean isLogging = false; // If currently logging position and time to microSD memory
-boolean inTrial = false; // If currently in a trial
 boolean moduleStreaming = false; // If streaming position to a separate module via the output stream jack (preconfigured output for DDS module)
 int16_t EncoderPos = 0; // Current position of the rotary encoder
+byte currentDir = 0; // Current direction (0 = clockwise, 1 = counterclockwise)
 
 // Program variables
 byte opCode = 0;
@@ -73,12 +71,9 @@ boolean newOp = false;
 boolean loggedDataAvailable = 0;
 boolean wrappingEnabled = true;
 byte wrapMode = 0;
-byte terminatingEvent = 0;
 boolean EncoderPinAValue = 0;
-boolean EncoderPinALastValue = 0;
+boolean LastEncoderPinAValue = 0;
 boolean EncoderPinBValue = 0;
-word EncoderPos16Bit =  0;
-unsigned long choiceTime = 0;
 unsigned long dataPos = 0;
 unsigned long dataMax = 4294967295; // Maximim number of positions that can be logged (limited by 32-bit counter)
 unsigned long startTime = 0;
@@ -136,7 +131,7 @@ void setup() {
   SD.remove("Data.wfm");
   DataFile = SD.open("Data.wfm", FILE_WRITE);
   wrapPointInverse = wrapPoint * -1;
-  attachInterrupt(EncoderPinA, readNewPosition, RISING);
+  attachInterrupt(EncoderPinA, updatePosition, CHANGE);
 }
 
 void loop() {
@@ -219,6 +214,9 @@ void loop() {
         }
         wrapPointInverse = wrapPoint * -1;
         nWraps = 0;
+        if ((EncoderPos > wrapPoint) || (EncoderPos < wrapPointInverse)) {
+          EncoderPos = wrapPoint;
+        }
       }
       break;
       case 'M': // Set wrap Mode: 0 bipolar (wrap to negative wrapPoint), 1 = unipolar (wrap to zero)
@@ -314,15 +312,8 @@ void loop() {
           myUSB.writeByte(1);
         }
       break;
-      case 'X': // Reset all params
-        usbStreaming = false;
-        isLogging = false;
-        inTrial = false;
-        dataPos = 0;
-        EncoderPos = 0;
-        nWraps = 0;
-        iPositionBuffer[0] = 0;
-        iPositionBuffer[1] = 0;
+      case 'X': // Reset all data streams
+        resetDataStreams();
       break;
     } // End switch(opCode)
   } // End if (SerialUSB.available())
@@ -335,10 +326,10 @@ void loop() {
     iPositionBuffer[currentPositionBuffer] = 0;
     if (usbStreaming) {
       if (nPositions > 0) {
-        usbStreamingBuffer[0] = 'P'; // Code for position data
-        usbStreamingBuffer[1] = nPositions;
-        usbStreamingBufferPos = 2;
+        usbStreamingBufferPos = 0;
         for (int i = 0; i < nPositions; i++) {
+          usbStreamingBuffer[usbStreamingBufferPos] = 'P'; // Code for position data
+          usbStreamingBufferPos++;
           typeBuffer.uint16 = positionBuffer[i][thisPositionBuffer]; // Position
           usbStreamingBuffer[usbStreamingBufferPos] = typeBuffer.uint8[0];
           usbStreamingBuffer[usbStreamingBufferPos+1] = typeBuffer.uint8[1];
@@ -351,8 +342,6 @@ void loop() {
           usbStreamingBufferPos+=4;
         }
         myUSB.writeByteArray(usbStreamingBuffer, usbStreamingBufferPos);
-      } else {
-        myUSB.writeByte('F'); // Fault
       }
       myUSB.flush();
     }
@@ -364,7 +353,11 @@ void loop() {
     if (moduleStreaming) {
       for (int i = 0; i < nPositions; i++) {
         OutputStreamCOM.writeByte(moduleStreamPrefix);
-        typeBuffer.uint32 = positionBuffer[i][currentPositionBuffer]+wrapPoint;
+        if (wrapMode == 0) { // In Bipolar mode, sends the unipolar equivalent
+          typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer]+wrapPoint;
+        } else {
+          typeBuffer.uint32 = positionBuffer[i][thisPositionBuffer];
+        }
         switch(outputStreamDatatype) {
           case 'H':
             OutputStreamCOM.writeUint16(typeBuffer.uint16);
@@ -381,16 +374,20 @@ void loop() {
           if (thresholdActive[i]) {
              if (thresholds[i] < 0) {
                 for (int j = 0; j < nPositions; j++) {
-                  if (positionBuffer[j][currentPositionBuffer] <= thresholds[i]) {
-                    thresholdActive[i] = false;
-                    StateMachineCOM.writeByte(i+1);
+                  if (thresholdActive[i]) {
+                    if (positionBuffer[j][thisPositionBuffer] <= thresholds[i]) {
+                      thresholdActive[i] = false;
+                      StateMachineCOM.writeByte(i+1);
+                    }
                   }
                 }
              } else {
                 for (int j = 0; j < nPositions; j++) {
-                  if (positionBuffer[j][currentPositionBuffer] >= thresholds[i]) {
-                    thresholdActive[i] = false;
-                    StateMachineCOM.writeByte(i+1);
+                  if (thresholdActive[i]) {
+                    if (positionBuffer[j][thisPositionBuffer] >= thresholds[i]) {
+                      thresholdActive[i] = false;
+                      StateMachineCOM.writeByte(i+1);
+                    }
                   }
                 }
              }
@@ -401,21 +398,42 @@ void loop() {
   }
 }
 
-void readNewPosition() {
-  // If this function was called, we already know encoder pin A was just driven high
-  EncoderPinBValue = digitalRead(EncoderPinB);
-  timeFromStart = currentTime - startTime;
-  if (EncoderPinBValue == HIGH) {
-    EncoderPos++;
-  } else {
-    EncoderPos--;
+void updatePosition() { // Implements 'X1 encoding' as per NI encoder tutorial: http://www.ni.com/tutorial/7109/en/
+  // This interrupt handler is called each time the value of pin A changes
+  EncoderPinAValue = digitalReadFast(EncoderPinA);
+  EncoderPinBValue = digitalReadFast(EncoderPinB);
+  if (EncoderPinAValue && !LastEncoderPinAValue) { // If rising edge of pin A
+    if (EncoderPinBValue == HIGH) {
+      if (currentDir == 0) {
+        EncoderPos++;
+        processPosition();
+      }
+      currentDir = 0;
+    } else {
+      currentDir = 1;
+    }
+  } else {                                         // If falling edge of pin A
+    if (EncoderPinBValue == HIGH) {
+      if (currentDir == 1) {
+        EncoderPos--;
+        processPosition();
+      }
+      currentDir = 1;
+    } else {
+      currentDir = 0;
+    }
   }
+  LastEncoderPinAValue = EncoderPinAValue;
+}
+
+void processPosition() {
+  timeFromStart = currentTime - startTime;
   if (wrappingEnabled) {
     switch (wrapMode) {
       case 0: // Bipolar mode
-        if (EncoderPos < wrapPointInverse) {
+        if (EncoderPos <= wrapPointInverse) {
           EncoderPos = wrapPoint; nWraps--;
-        } else if (EncoderPos > wrapPoint) {
+        } else if (EncoderPos >= wrapPoint) {
           EncoderPos = wrapPointInverse; nWraps++;
         }
       break;
@@ -477,3 +495,14 @@ byte readByteFromSource(byte opSource) {
     break;
   }
 }
+
+void resetDataStreams() {
+  usbStreaming = false;
+  isLogging = false;
+  dataPos = 0;
+  EncoderPos = 0;
+  nWraps = 0;
+  iPositionBuffer[0] = 0;
+  iPositionBuffer[1] = 0;
+}
+
