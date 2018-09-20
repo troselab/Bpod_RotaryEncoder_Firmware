@@ -35,7 +35,7 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 3;
+unsigned long FirmwareVersion = 4;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
 
 // Output stream setup
@@ -255,6 +255,18 @@ void loop() {
       case 'Z': // Zero position
           EncoderPos = 0;
           nWraps = 0;
+          if (usbStreaming) {
+            newEventTime = currentTime - startTime;
+            usbStreamingBuffer[0] = 'P'; // Code for position data
+            usbStreamingBuffer[1] = 0;
+            usbStreamingBuffer[2] = 0;
+            typeBuffer.uint32 = newEventTime; // Time
+            usbStreamingBuffer[3] = typeBuffer.uint8[0]; 
+            usbStreamingBuffer[4] = typeBuffer.uint8[1];
+            usbStreamingBuffer[5] = typeBuffer.uint8[2];
+            usbStreamingBuffer[6] = typeBuffer.uint8[3];
+            myUSB.writeByteArray(usbStreamingBuffer, 7);
+          }
       break;
       case 'E': // Enable all thresholds
         for (int i = 0; i < nThresholds; i++) {
