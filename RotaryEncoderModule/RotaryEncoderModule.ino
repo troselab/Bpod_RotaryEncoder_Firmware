@@ -27,6 +27,7 @@
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
+#define FirmwareVersion 5
 SdFatSdioEX SD;
 ArCOM myUSB(SerialUSB); // USB is an ArCOM object. ArCOM wraps Arduino's SerialUSB interface, to
 ArCOM StateMachineCOM(Serial3); // UART serial port
@@ -35,7 +36,6 @@ ArCOM OutputStreamCOM(Serial2); // UART serial port
 File DataFile; // File on microSD card, to store position data
 
 // Module setup
-unsigned long FirmwareVersion = 4;
 char moduleName[] = "RotaryEncoder"; // Name of module for manual override UI and state machine assembler
 
 // Output stream setup
@@ -74,11 +74,9 @@ byte wrapMode = 0;
 boolean EncoderPinAValue = 0;
 boolean LastEncoderPinAValue = 0;
 boolean EncoderPinBValue = 0;
-unsigned long dataPos = 0;
-unsigned long dataMax = 4294967295; // Maximim number of positions that can be logged (limited by 32-bit counter)
-unsigned long startTime = 0;
-unsigned long currentTime = 0;
-unsigned long timeFromStart = 0;
+uint32_t dataPos = 0;
+uint32_t dataMax = 4294967295; // Maximim number of positions that can be logged (limited by 32-bit counter)
+elapsedMicros currentTime;
 int16_t wrapPointInverse = 0;
 union {
     byte uint8[4];
@@ -87,8 +85,8 @@ union {
 } typeBuffer;
 
 // microSD variables
-unsigned long nRemainderBytes = 0;
-unsigned long nFullBufferReads = 0;
+uint32_t nRemainderBytes = 0;
+uint32_t nFullBufferReads = 0;
 union {
     byte uint8[800];
     uint32_t int32[200];
@@ -135,7 +133,6 @@ void setup() {
 }
 
 void loop() {
-  currentTime = millis();
   if (myUSB.available() > 0) {
     opCode = myUSB.readByte();
     newOp = true;
@@ -168,7 +165,7 @@ void loop() {
           if (usbStreaming) {
             EncoderPos = 0; // Reset position
             nWraps = 0; // Reset wrap counter
-            startTime = currentTime;
+            currentTime = 0; // Reset clock
           }
         }
       break;
@@ -187,7 +184,7 @@ void loop() {
       case '#': // Log an incoming event and the current time
         if (opSource == 1) {
           newEventCode = StateMachineCOM.readByte();
-          newEventTime = currentTime - startTime;
+          newEventTime = currentTime;
           newEventType = 0; // 0 = State Machine, (Not yet implemented: 1 = TTL Ch 18, 2 = TTL Ch 19, 3 = I2C)
           if (usbStreaming) {
             usbStreamingBuffer[0] = 'E';
@@ -256,7 +253,7 @@ void loop() {
           EncoderPos = 0;
           nWraps = 0;
           if (usbStreaming) {
-            newEventTime = currentTime - startTime;
+            newEventTime = currentTime;
             usbStreamingBuffer[0] = 'P'; // Code for position data
             usbStreamingBuffer[1] = 0;
             usbStreamingBuffer[2] = 0;
@@ -439,7 +436,6 @@ void updatePosition() { // Implements 'X1 encoding' as per NI encoder tutorial: 
 }
 
 void processPosition() {
-  timeFromStart = currentTime - startTime;
   if (wrappingEnabled) {
     switch (wrapMode) {
       case 0: // Bipolar mode
@@ -460,7 +456,7 @@ void processPosition() {
   }
   thisInd = iPositionBuffer[currentPositionBuffer];
   positionBuffer[thisInd][currentPositionBuffer] = EncoderPos;
-  timeBuffer[thisInd][currentPositionBuffer] = timeFromStart;
+  timeBuffer[thisInd][currentPositionBuffer] = currentTime;
   iPositionBuffer[currentPositionBuffer]++;
   positionBufferFlag = true;
 }
@@ -476,9 +472,8 @@ void returnModuleInfo() {
 void startLogging() {
   DataFile.seek(0);
   dataPos = 0;
-  startTime = currentTime;
+  currentTime = 0;
   isLogging = true;
-  timeFromStart = 0;
   iPositionBuffer[0] = 0;
   iPositionBuffer[1] = 0;
 }
@@ -517,4 +512,3 @@ void resetDataStreams() {
   iPositionBuffer[0] = 0;
   iPositionBuffer[1] = 0;
 }
-
