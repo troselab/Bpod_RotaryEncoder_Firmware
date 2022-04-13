@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_Gen2 repository
-  Copyright (C) 2017 Sanworks LLC, Stony Brook, New York, USA
+  Copyright (C) 2018 Sanworks LLC, Stony Brook, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -64,6 +64,7 @@ int16_t EncoderPos = 0; // Current position of the rotary encoder
 byte currentDir = 0; // Current direction (0 = clockwise, 1 = counterclockwise)
 
 // Program variables
+byte testByte = 0;
 byte opCode = 0;
 byte opSource = 0;
 byte param = 0;
@@ -154,9 +155,36 @@ void loop() {
           returnModuleInfo();
         }
       break;
+      case 254: // Relay test byte from USB to echo module, or from echo module back to USB 
+        if (opSource == 0) {
+          OutputStreamCOM.writeByte(254);
+        }
+        if (opSource == 2) {
+          myUSB.writeByte(254);
+        }
+      break;
       case 'C': // USB Handshake
         if (opSource == 0) {
           myUSB.writeByte(217);
+        }
+      break;
+      case 200: // Byte forwarding (Diagnostic)
+        switch (opSource) {
+          case 0:
+            testByte = myUSB.readByte();
+            OutputStreamCOM.writeByte(testByte);
+          break;
+          case 1:
+            testByte = myUSB.readByte();
+            StateMachineCOM.writeByte(testByte);
+          break;
+        }
+      break;
+      case 201: // Byte forwarding (Diagnostic)
+        switch (opSource) {
+          case 2:
+            myUSB.writeByte(201);
+          break;
         }
       break;
       case 'S': // Start/Stop USB position+time data stream
