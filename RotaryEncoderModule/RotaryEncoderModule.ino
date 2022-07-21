@@ -24,15 +24,18 @@
 // The MATLAB interface can capture streaming position data and set new thresholds.
 // NOTE: This firmware uses the QuadEncoder library developed by Mike S (mjs513). Big shoutout to Mike! More at https://github.com/mjs513/Teensy-4.x-Quad-Encoder-Library
 
+#define FirmwareVersion 6
+#define HARDWARE_VERSION 1 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE!
+
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
 #include "QuadEncoder.h"
-#define FirmwareVersion 6
-#define HARDWARE_VERSION 2 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE!
 
 #if HARDWARE_VERSION == 1
-  SdFatSdioEX SD;
+  SdFs SDcard;
+  FsFile DataFile; // File on microSD card, to store waveform data
+  bool ready = false; // Indicates if SD is busy (for use with SDBusy() funciton)
 #else
   QuadEncoder hwEnc(1, 7, 8);
   IntervalTimer hardwareTimer;
@@ -42,7 +45,6 @@ ArCOM myUSB(SerialUSB); // USB is an ArCOM object. ArCOM wraps Arduino's SerialU
 #if HARDWARE_VERSION == 1
   ArCOM StateMachineCOM(Serial3); // UART serial port
   ArCOM OutputStreamCOM(Serial2); // UART serial port
-  File DataFile; // File on microSD card, to store position data
 #elif HARDWARE_VERSION == 2
   ArCOM StateMachineCOM(Serial1);
 #endif
@@ -183,9 +185,12 @@ void setup() {
   #if HARDWARE_VERSION == 1
     pinMode(EncoderPinA, INPUT);
     pinMode (EncoderPinB, INPUT);
-    SD.begin(); // Initialize microSD card
-    SD.remove("Data.wfm");
-    DataFile = SD.open("Data.wfm", FILE_WRITE);
+    SDcard.begin(SdioConfig(FIFO_SDIO));
+    SDcard.remove("Data.wfm");
+    DataFile = SDcard.open("Data.wfm", O_RDWR | O_CREAT);
+    DataFile.preAllocate(1000000);
+    while (sdBusy()) {}
+    DataFile.seek(0);
   #endif
   #if HARDWARE_VERSION == 2
     hwEnc.setInitConfig();
@@ -626,11 +631,11 @@ void updatePosition() {
         }
       } 
     }
-  #endif
   outputSyncLogic[1] = 1-outputSyncLogic[1];
   dacValue.uint16[0] = EncoderPos*16;
   dacValue.uint16[1] = outputSyncLogic[1]*logic3v3_bits;
   dacWrite();
+  #endif
 }
 
 void processPosition() {
@@ -751,6 +756,12 @@ void resetDataStreams() {
     dacBuffer[2] = 0;
     SPI.transfer(dacBuffer,3);
     digitalWriteFast(DAC_CS_Pin,HIGH);
+  }
+#endif
+
+#if HARDWARE_VERSION == 1
+  bool sdBusy() {
+    return ready ? SDcard.card()->isBusy() : false;
   }
 #endif
 

@@ -1,3 +1,4 @@
+#if HARDWARE_VERSION > 1
 #include "Arduino.h"
 #include "QuadEncoder.h"
 
@@ -564,3 +565,4 @@ void QuadEncoder::enableCompareInterrupt()
 {
 	channel[_encoder_ch].ENC->CTRL |= ENC_CTRL_CMPIE_MASK;
 }
+#endif

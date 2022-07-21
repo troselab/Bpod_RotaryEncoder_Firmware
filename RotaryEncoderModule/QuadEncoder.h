@@ -1,8 +1,9 @@
+#if HARDWARE_VERSION > 1
 #ifndef __QUADENCODER_H__
 #define __QUADENCODER_H__
  
 #ifndef __IMXRT1062__
-#error "Sorry, Quad Encoder only works on Teensy 4.x boards"
+//#error "Sorry, Quad Encoder only works on Teensy 4.x boards"
 #endif
 
 #include <Arduino.h>
@@ -231,4 +232,5 @@ private:
 
 };
 
+#endif
 #endif
