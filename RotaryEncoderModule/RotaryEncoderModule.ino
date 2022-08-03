@@ -22,10 +22,9 @@
 // The rotary encoder module, powered by Teensy 3.5 (v1) or 4.0 (v2), interfaces the Bpod state machine with a quadrature rotary encoder (e.g. Yumo E6B2-CWZ3E)
 // The serial interface allows the state machine to set position thresholds which generate Bpod events when crossed, and to reset the encoder position.
 // The MATLAB interface can capture streaming position data and set new thresholds.
-// NOTE: This firmware uses the QuadEncoder library developed by Mike S (mjs513). Big shoutout to Mike! More at https://github.com/mjs513/Teensy-4.x-Quad-Encoder-Library
 
 #define FirmwareVersion 6
-#define HARDWARE_VERSION 1 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE!
+#define HARDWARE_VERSION 2 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE!
 
 #include "ArCOM.h"
 #include <SPI.h>
