@@ -24,8 +24,8 @@
 // The MATLAB interface can capture streaming position data and set new thresholds.
 
 #define FirmwareVersion 6
-#define HARDWARE_VERSION 1 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE! You MUST uncomment the next line if compiling for HARDWARE_VERSION 2
-// #include "QuadEncoder.h"
+#define HARDWARE_VERSION 2 // NOTE: SET THIS TO MATCH THE TARGET VERSION OF THE MODULE! You MUST uncomment the next line if compiling for HARDWARE_VERSION 2
+#include "QuadEncoder.h"
 
 #include "ArCOM.h"
 #include <SPI.h>
